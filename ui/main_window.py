@@ -37,6 +37,9 @@ class MainWindow(QMainWindow):
         # 引擎 — 必须在 tab widget 之前创建
         self._engine = ExecutionEngine()
 
+        # 状态 — 必须在 _new_tab 之前初始化
+        self._tab_files: dict = {}
+
         # 核心组件
         self._tab_widget = QTabWidget()
         self._tab_widget.setTabsClosable(True)
@@ -62,7 +65,6 @@ class MainWindow(QMainWindow):
         self._current_file: Optional[str] = None
         self._current_exec_line: int = 0
         self._source_dirty: bool = False
-        self._last_displayed_var: Optional[str] = None
         self._recent_files: list = []
 
         # 构建界面
@@ -87,6 +89,7 @@ class MainWindow(QMainWindow):
         editor = ScriptEditor()
         idx = self._tab_widget.addTab(editor, "未命名")
         self._tab_widget.setCurrentIndex(idx)
+        self._connect_editor_signals(editor)
         return editor
 
     def _close_tab(self, idx: int):
@@ -124,6 +127,8 @@ class MainWindow(QMainWindow):
             title = self._tab_widget.tabText(idx)
             self.setWindowTitle(f"OpencvIDE — {title}")
             self._engine.set_breakpoints(editor.breakpoints())
+            # 更新当前文件路径
+            self._current_file = self._tab_files.get(idx)
 
     # ------------------------------------------------------------------
     # 布局
@@ -337,13 +342,14 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.warning(self, "错误", f"无法打开文件: {e}")
             return
-        # 在当前标签页打开
         editor = self._editor
         editor.setPlainText(content)
         editor.mark_clean()
         self._current_file = path
+        idx = self._tab_widget.currentIndex()
+        self._tab_files[idx] = path
         basename = os.path.basename(path)
-        self._tab_widget.setTabText(self._tab_widget.currentIndex(), basename)
+        self._tab_widget.setTabText(idx, basename)
         self.setWindowTitle(f"OpencvIDE — {basename}")
         self._engine.set_source(content)
         self._add_recent(path)
@@ -374,7 +380,9 @@ class MainWindow(QMainWindow):
             return False
         self._editor.mark_clean()
         basename = os.path.basename(path)
-        self._tab_widget.setTabText(self._tab_widget.currentIndex(), basename)
+        idx = self._tab_widget.currentIndex()
+        self._tab_files[idx] = path
+        self._tab_widget.setTabText(idx, basename)
         self.setWindowTitle(f"OpencvIDE — {basename}")
         self._add_recent(path)
         self._status.showMessage(f"已保存: {path}")
@@ -556,6 +564,10 @@ class MainWindow(QMainWindow):
         # ROI 创建 → 变量注入
         self._viewer.roi_created.connect(self._on_roi_created)
 
+        # 缩放/平移联动
+        self._viewer.zoom_updated.connect(self._on_viewer_zoom_changed)
+        self._viewer.pan_updated.connect(self._on_viewer_pan_changed)
+
         # 第一个标签页的信号
         self._connect_editor_signals(self._editor)
 
@@ -591,12 +603,33 @@ class MainWindow(QMainWindow):
         # 连接信号
         viewer.pixel_hovered.connect(self._on_pixel_hovered)
         viewer.roi_created.connect(self._on_roi_created)
+        viewer.zoom_updated.connect(self._on_viewer_zoom_changed)
+        viewer.pan_updated.connect(self._on_viewer_pan_changed)
         # 限制标签页数量
         while self._viewer_tabs.count() > 10:
             self._viewer_tabs.removeTab(1)  # 保留 "当前" 标签在索引 0
 
     def _on_pixel_hovered(self, x: int, y: int, info: str):
-        self._status.showMessage(info, 3000)  # 3 秒后清除
+        self._status.showMessage(info, 3000)
+
+    # ------------------------------------------------------------------
+    # 缩放/平移联动
+    # ------------------------------------------------------------------
+    def _on_viewer_zoom_changed(self, scale: float, center):
+        """一个查看器缩放时同步所有其他查看器。"""
+        sender = self.sender()
+        for i in range(self._viewer_tabs.count()):
+            viewer = self._viewer_tabs.widget(i)
+            if viewer is not sender and viewer:
+                viewer._apply_zoom_with_absolute(scale, center, emit=False)
+
+    def _on_viewer_pan_changed(self, center):
+        """一个查看器平移时同步所有其他查看器。"""
+        sender = self.sender()
+        for i in range(self._viewer_tabs.count()):
+            viewer = self._viewer_tabs.widget(i)
+            if viewer is not sender and viewer:
+                viewer.sync_pan(center)
 
     # ------------------------------------------------------------------
     # ROI 工具
@@ -610,22 +643,29 @@ class MainWindow(QMainWindow):
 
     def _on_roi_created(self, roi_type: str, params: tuple):
         """ROI 绘制完成，注入变量到引擎命名空间。"""
+        if not self._engine.isRunning():
+            return
         if roi_type == "rect" and len(params) == 4:
             x, y, w, h = params
-            var_name = f"roi_rect_{x}_{y}_{w}_{h}"
-            self._status.showMessage(f"矩形: ({x},{y},{w},{h})")
+            self._engine._namespace["roi_x"] = x
+            self._engine._namespace["roi_y"] = y
+            self._engine._namespace["roi_w"] = w
+            self._engine._namespace["roi_h"] = h
+            self._status.showMessage(f"矩形ROI: ({x},{y},{w},{h}) → roi_x/roi_y/roi_w/roi_h")
         elif roi_type == "circle" and len(params) == 3:
             cx, cy, r = params
-            var_name = f"roi_circle_{cx}_{cy}_{r}"
-            self._status.showMessage(f"圆形: 中心({cx},{cy}) r={r}")
+            self._engine._namespace["roi_cx"] = cx
+            self._engine._namespace["roi_cy"] = cy
+            self._engine._namespace["roi_r"] = r
+            self._status.showMessage(f"圆形ROI: 中心({cx},{cy}) r={r} → roi_cx/roi_cy/roi_r")
         elif roi_type == "line" and len(params) == 4:
             x1, y1, x2, y2 = params
-            var_name = f"roi_line_{x1}_{y1}_{x2}_{y2}"
-            self._status.showMessage(f"直线: ({x1},{y1})→({x2},{y2})")
-        else:
-            return
-        # 存储 ROI 变量以便查看
-        self._last_roi = (roi_type, params, var_name)
+            self._engine._namespace["roi_x1"] = x1
+            self._engine._namespace["roi_y1"] = y1
+            self._engine._namespace["roi_x2"] = x2
+            self._engine._namespace["roi_y2"] = y2
+            self._status.showMessage(f"直线ROI: ({x1},{y1})→({x2},{y2}) → roi_x1/roi_y1/roi_x2/roi_y2")
+        self._variable_panel.refresh(self._engine.get_all_variables())
 
     def _on_script_modified(self, source: str):
         """编辑器内容变化时更新引擎源码并标记脏。"""

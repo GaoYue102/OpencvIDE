@@ -158,7 +158,7 @@ class ImageCanvas(QGraphicsView):
     def mousePressEvent(self, event: QMouseEvent):
         if event.button() == Qt.MouseButton.LeftButton:
             if self._roi_mode:
-                self._roi_start = self.mapToScene(event.pos().toPoint())
+                self._roi_start = self.mapToScene(event.pos())
                 self._roi_draw_start()
                 return
             self._panning = True
@@ -197,7 +197,7 @@ class ImageCanvas(QGraphicsView):
         """检测鼠标下方的像素值并发出信号。"""
         if self._source_pixmap is None or self._pixmap_item is None:
             return
-        scene_pos = self.mapToScene(event.pos().toPoint())
+        scene_pos = self.mapToScene(event.pos())
         x = int(scene_pos.x())
         y = int(scene_pos.y())
         pix_rect = self._source_pixmap.rect()
@@ -208,12 +208,6 @@ class ImageCanvas(QGraphicsView):
         r, g, b = color.red(), color.green(), color.blue()
         info = f"({x}, {y})  R:{r} G:{g} B:{b}"
         self.pixel_hovered.emit(x, y, info)
-
-    def mouseReleaseEvent(self, event: QMouseEvent):
-        if event.button() == Qt.MouseButton.LeftButton:
-            self._panning = False
-            self.setCursor(Qt.CursorShape.ArrowCursor)
-        super().mouseReleaseEvent(event)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -249,7 +243,7 @@ class ImageCanvas(QGraphicsView):
     def _roi_draw_move(self, event: QMouseEvent):
         if not self._roi_item or not self._roi_start:
             return
-        end = self.mapToScene(event.pos().toPoint())
+        end = self.mapToScene(event.pos())
         if self._roi_mode == "rect":
             rect = QRectF(self._roi_start, end).normalized()
             self._roi_item.setRect(rect)
@@ -260,9 +254,6 @@ class ImageCanvas(QGraphicsView):
             self._roi_item.setLine(QLineF(self._roi_start, end))
 
     def _roi_draw_end(self):
-        end = self._roi_item.mapToScene(
-            self._roi_item.boundingRect().center()
-        ) if hasattr(self._roi_item, 'boundingRect') else QPointF()
         # 计算最终参数
         if self._roi_mode == "rect":
             rect = self._roi_item.rect()

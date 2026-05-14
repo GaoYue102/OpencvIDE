@@ -84,7 +84,7 @@ class ExecutionEngine(QThread):
         self._target_line = 0
 
     def is_paused(self) -> bool:
-        return not self._step_event.is_set()
+        return self.isRunning() and not self._step_event.is_set()
 
     def get_variable(self, name: str):
         """获取命名空间中的变量值。"""
