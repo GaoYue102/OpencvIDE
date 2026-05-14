@@ -595,23 +595,23 @@ class MainWindow(QMainWindow):
             self._function_doc.show_line_doc(block.text())
 
     def _on_new_image(self, name: str, cv_img: np.ndarray):
-        # 更新主查看器
+        # 更新主查看器并切回 "当前" 标签页
         self._main_viewer.set_cv_image(cv_img)
         self._histogram_panel.set_image(cv_img)
+        self._viewer_tabs.setCurrentIndex(0)
         self._last_displayed_var = name
-        # 添加历史标签页
+        # 后台添加历史对比标签页
         viewer = ImageCanvas()
         viewer.set_cv_image(cv_img)
         self._viewer_tabs.addTab(viewer, name)
-        self._viewer_tabs.setCurrentWidget(viewer)
-        # 连接信号
         viewer.pixel_hovered.connect(self._on_pixel_hovered)
         viewer.roi_created.connect(self._on_roi_created)
         viewer.zoom_updated.connect(self._on_viewer_zoom_changed)
         viewer.pan_updated.connect(self._on_viewer_pan_changed)
         # 限制标签页数量
         while self._viewer_tabs.count() > 10:
-            self._viewer_tabs.removeTab(1)  # 保留 "当前" 标签在索引 0
+            self._viewer_tabs.removeTab(1)
+        self._status.showMessage(f"图像: {name}  ({cv_img.shape[1]}x{cv_img.shape[0]})")
 
     def _on_pixel_hovered(self, x: int, y: int, info: str):
         self._status.showMessage(info, 3000)
