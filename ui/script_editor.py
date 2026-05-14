@@ -105,9 +105,9 @@ class ScriptEditor(QPlainTextEdit):
     # 行号栏
     # ------------------------------------------------------------------
     def _line_number_area_width(self):
-        digits = max(3, len(str(max(1, self.blockCount()))))
-        space = 10 + self.fontMetrics().horizontalAdvance('9') * digits
-        return space + 18  # 18px 留给执行箭头和断点
+        digits = max(4, len(str(max(1, self.blockCount()))))
+        text_w = self.fontMetrics().horizontalAdvance('9') * digits
+        return 18 + text_w + 10  # 左侧图标区 + 数字宽度 + 右侧留白
 
     def _line_number_area_size(self):
         from PyQt6.QtCore import QSize
@@ -186,14 +186,13 @@ class ScriptEditor(QPlainTextEdit):
                     painter.drawPolygon(poly)
                     painter.restore()
 
-                # 行号
+                # 行号（右对齐，在箭头区域右侧绘制）
                 painter.setPen(QColor("#999999"))
-                num_x = arrow_area_w + 4 + (3 - len(number)) * digit_w
                 painter.drawText(
-                    int(num_x), top,
-                    self._line_number_area.width() - int(arrow_area_w),
+                    arrow_area_w, top,
+                    self._line_number_area.width() - arrow_area_w - 4,
                     font_metrics.height(),
-                    Qt.AlignmentFlag.AlignRight, number
+                    Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, number
                 )
 
             block = block.next()

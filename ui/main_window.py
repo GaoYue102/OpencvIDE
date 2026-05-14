@@ -480,13 +480,17 @@ class MainWindow(QMainWindow):
         self._engine.reset()
         self._engine.set_source(self._editor.toPlainText())
         self._exec_state = ExecState.IDLE
+        self._source_dirty = False
+        self._current_exec_line = 0
         self._editor.clear_highlight()
+        self._editor._target_line = -1
+        self._editor._line_number_area.update()
         self._variable_panel.clear()
         self._function_doc.clear()
         self._clear_viewers()
-        self._current_exec_line = 0
+        self._engine.set_breakpoints(set())
         self._update_button_states()
-        self._status.showMessage("已重置")
+        self._status.showMessage("已重置 — 从头开始")
 
     def _start_engine(self):
         self._engine.reset()
