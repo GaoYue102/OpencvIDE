@@ -1,8 +1,12 @@
-"""脚本编辑器 —— 带行号栏、执行行高亮、只读切换。"""
+"""脚本编辑器 —— 带行号栏、语法高亮、代码补全、执行行高亮。"""
+from typing import Set
+
 from PyQt6.QtWidgets import QPlainTextEdit, QWidget, QTextEdit
-from PyQt6.QtCore import Qt, QRect, pyqtSignal
+from PyQt6.QtCore import Qt, QRect, pyqtSignal, QPointF
 from PyQt6.QtGui import QColor, QPainter, QTextFormat, QFont, QPolygonF
-from PyQt6.QtCore import QPointF
+
+from ui.syntax_highlighter import PythonHighlighter
+from ui.code_completer import CodeCompleter
 
 
 # 预置示例脚本
@@ -17,7 +21,7 @@ canny_low = 100            # Canny 低阈值
 canny_high = 200           # Canny 高阈值
 
 # === 图像处理流程 ===
-img = cv2.imread(r"photo.jpg")
+img = cv2.imread(r"C:\Users\gaoyu\Desktop\HdevelopInerface.png")
 
 gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
@@ -42,9 +46,14 @@ class LineNumberArea(QWidget):
         self._editor._line_number_area_paint(event)
 
     def mousePressEvent(self, event):
+        x = event.pos().x()
         line_no = self._editor._line_at_y(event.pos().y())
         if line_no > 0:
-            self._editor._on_line_number_clicked(line_no)
+            # 左侧区域 (arrow_area) 用于断点切换
+            if x < 14:
+                self._editor._toggle_breakpoint(line_no)
+            else:
+                self._editor._on_line_number_clicked(line_no)
         super().mousePressEvent(event)
 
 
@@ -53,6 +62,7 @@ class ScriptEditor(QPlainTextEdit):
 
     script_modified = pyqtSignal(str)
     line_clicked = pyqtSignal(int)  # 点击行号
+    breakpoints_changed = pyqtSignal()  # 断点变更
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -61,6 +71,7 @@ class ScriptEditor(QPlainTextEdit):
         self._error_line: int = -1
         self._target_line: int = -1
         self._script_dirty = False
+        self._breakpoints: Set[int] = set()
 
         # 字体
         font = QFont("Consolas", 11)
@@ -68,10 +79,19 @@ class ScriptEditor(QPlainTextEdit):
         self.setFont(font)
         self.setTabStopDistance(4 * self.fontMetrics().horizontalAdvance(' '))
 
+        # 语法高亮
+        self._highlighter = PythonHighlighter(self.document())
+
+        # 代码补全
+        self._completer = CodeCompleter(self)
+        self._completer.setWidget(self)
+        self._completer.activated.connect(self._on_completion_activated)
+
         # 信号
         self.blockCountChanged.connect(self._update_line_number_area_width)
         self.updateRequest.connect(self._update_line_number_area)
         self.textChanged.connect(self._on_text_changed)
+        self.cursorPositionChanged.connect(self._on_cursor_for_completion)
 
         # 初始宽度
         self._update_line_number_area_width(0)
@@ -130,6 +150,16 @@ class ScriptEditor(QPlainTextEdit):
             if block.isVisible() and bottom >= event.rect().top():
                 number = str(block_number + 1)
                 line_no = block_number + 1
+
+                # 断点（红色实心圆）
+                if line_no in self._breakpoints:
+                    painter.save()
+                    painter.setBrush(QColor("#E53935"))
+                    painter.setPen(Qt.PenStyle.NoPen)
+                    bp_cx = 7
+                    bp_cy = top + (bottom - top) // 2
+                    painter.drawEllipse(QPointF(bp_cx, bp_cy), 4, 4)
+                    painter.restore()
 
                 # 执行箭头（绿色三角）
                 if line_no == self._current_line:
@@ -259,3 +289,53 @@ class ScriptEditor(QPlainTextEdit):
 
     def mark_clean(self):
         self._script_dirty = False
+
+    # ------------------------------------------------------------------
+    # 撤销/重做
+    # ------------------------------------------------------------------
+    def undo_edit(self):
+        self.undo()
+
+    def redo_edit(self):
+        self.redo()
+
+    # ------------------------------------------------------------------
+    # 代码补全
+    # ------------------------------------------------------------------
+    def _on_cursor_for_completion(self):
+        """光标移动时触发补全弹窗。"""
+        cursor = self.textCursor()
+        cursor.select(cursor.SelectionType.WordUnderCursor)
+        word = cursor.selectedText()
+        if word and word.startswith("cv2."):
+            self._completer.setCompletionPrefix(word)
+            if self._completer.completionCount() > 0:
+                cr = self.cursorRect()
+                cr.setWidth(300)
+                self._completer.complete(cr)
+
+    def _on_completion_activated(self, completion: str):
+        """选中补全项后插入。"""
+        cursor = self.textCursor()
+        cursor.select(cursor.SelectionType.WordUnderCursor)
+        cursor.insertText(completion)
+        self.setTextCursor(cursor)
+
+    # ------------------------------------------------------------------
+    # 断点
+    # ------------------------------------------------------------------
+    def breakpoints(self) -> Set[int]:
+        return set(self._breakpoints)
+
+    def set_breakpoints(self, bps: Set[int]):
+        self._breakpoints = set(bps)
+        self._line_number_area.update()
+
+    def _toggle_breakpoint(self, line_no: int):
+        """切换断点。"""
+        if line_no in self._breakpoints:
+            self._breakpoints.discard(line_no)
+        else:
+            self._breakpoints.add(line_no)
+        self._line_number_area.update()
+        self.breakpoints_changed.emit()

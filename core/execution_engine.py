@@ -6,7 +6,7 @@ import sys
 import threading
 import io
 from contextlib import redirect_stdout
-from typing import Dict, Any
+from typing import Dict, Any, Set
 import traceback
 
 import numpy as np
@@ -40,6 +40,7 @@ class ExecutionEngine(QThread):
         self._stop_flag = False
         self._step_mode = True
         self._target_line: int = 0
+        self._breakpoints: Set[int] = set()
         self._script_filename = "<opencv_ide_script>"
 
     # ------------------------------------------------------------------
@@ -64,6 +65,10 @@ class ExecutionEngine(QThread):
         self._target_line = target_line
         self._step_mode = False
         self._step_event.set()
+
+    def set_breakpoints(self, breakpoints: Set[int]):
+        """设置断点行号集合。"""
+        self._breakpoints = set(breakpoints)
 
     def stop(self):
         """停止执行。"""
@@ -161,7 +166,11 @@ class ExecutionEngine(QThread):
         should_pause = self._step_mode
         if self._target_line > 0 and line_no >= self._target_line:
             should_pause = True
-            self._target_line = 0  # 到达目标行后清除
+            self._target_line = 0
+            self._step_mode = True
+        if line_no in self._breakpoints and not self._step_mode:
+            # 连续运行中命中断点
+            should_pause = True
             self._step_mode = True
 
         if should_pause:

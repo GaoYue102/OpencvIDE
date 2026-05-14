@@ -2,9 +2,12 @@
 from typing import Optional
 
 import numpy as np
-from PyQt6.QtWidgets import QGraphicsView, QGraphicsScene, QGraphicsPixmapItem
-from PyQt6.QtCore import Qt, QPointF, QRectF, QTimer, pyqtSignal
-from PyQt6.QtGui import QPixmap, QWheelEvent, QMouseEvent, QPainter, QImage
+from PyQt6.QtWidgets import (
+    QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QGraphicsItemGroup,
+    QGraphicsEllipseItem, QGraphicsRectItem, QGraphicsLineItem,
+)
+from PyQt6.QtCore import Qt, QPointF, QRectF, QTimer, pyqtSignal, QLineF
+from PyQt6.QtGui import QPixmap, QWheelEvent, QMouseEvent, QPainter, QImage, QPen, QColor
 
 
 def cv2_to_qpixmap(cv_img: np.ndarray) -> QPixmap:
@@ -23,6 +26,8 @@ class ImageCanvas(QGraphicsView):
 
     zoom_updated = pyqtSignal(float, QPointF)
     pan_updated = pyqtSignal(QPointF)
+    pixel_hovered = pyqtSignal(int, int, str)  # x, y, 颜色信息
+    roi_created = pyqtSignal(str, tuple)  # (roi_type, params)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -30,6 +35,9 @@ class ImageCanvas(QGraphicsView):
         self.setScene(self._scene)
         self._pixmap_item: Optional[QGraphicsPixmapItem] = None
         self._source_pixmap: Optional[QPixmap] = None
+        self._roi_mode: str = ""  # "" / "rect" / "circle" / "line"
+        self._roi_start: Optional[QPointF] = None
+        self._roi_item: Optional[QGraphicsItemGroup] = None
 
         self._zoom_factor = 1.15
         self._min_scale = 0.01
@@ -38,6 +46,8 @@ class ImageCanvas(QGraphicsView):
 
         self._panning = False
         self._pan_start = QPointF()
+
+        self.setMouseTracking(True)
 
         self.setRenderHints(
             QPainter.RenderHint.Antialiasing
@@ -90,6 +100,21 @@ class ImageCanvas(QGraphicsView):
         """直接显示 numpy 图像数组（OpenCV 格式）。记住缩放状态。"""
         self.set_image(cv2_to_qpixmap(cv_img))
 
+    # ------------------------------------------------------------------
+    # ROI 绘制模式
+    # ------------------------------------------------------------------
+    def set_roi_mode(self, mode: str):
+        """设置 ROI 绘制模式: '' / 'rect' / 'circle' / 'line'。"""
+        self._roi_mode = mode
+        if mode:
+            self.setCursor(Qt.CursorShape.CrossCursor)
+            self.setDragMode(QGraphicsView.DragMode.NoDrag)
+        else:
+            self.setCursor(Qt.CursorShape.ArrowCursor)
+
+    def roi_mode(self) -> str:
+        return self._roi_mode
+
     def clear_image(self):
         self._scene.clear()
         self._pixmap_item = None
@@ -132,12 +157,19 @@ class ImageCanvas(QGraphicsView):
 
     def mousePressEvent(self, event: QMouseEvent):
         if event.button() == Qt.MouseButton.LeftButton:
+            if self._roi_mode:
+                self._roi_start = self.mapToScene(event.pos().toPoint())
+                self._roi_draw_start()
+                return
             self._panning = True
             self._pan_start = event.position()
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent):
+        if self._roi_mode and self._roi_start:
+            self._roi_draw_move(event)
+            return
         if self._panning:
             delta = event.position() - self._pan_start
             self._pan_start = event.position()
@@ -148,7 +180,34 @@ class ImageCanvas(QGraphicsView):
                 self.verticalScrollBar().value() - int(delta.y())
             )
             self.pan_updated.emit(self.scene_center())
+        else:
+            self._check_pixel_hover(event)
         super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent):
+        if event.button() == Qt.MouseButton.LeftButton:
+            if self._roi_mode and self._roi_start:
+                self._roi_draw_end()
+                return
+            self._panning = False
+            self.setCursor(Qt.CursorShape.ArrowCursor)
+        super().mouseReleaseEvent(event)
+
+    def _check_pixel_hover(self, event: QMouseEvent):
+        """检测鼠标下方的像素值并发出信号。"""
+        if self._source_pixmap is None or self._pixmap_item is None:
+            return
+        scene_pos = self.mapToScene(event.pos().toPoint())
+        x = int(scene_pos.x())
+        y = int(scene_pos.y())
+        pix_rect = self._source_pixmap.rect()
+        if x < 0 or y < 0 or x >= pix_rect.width() or y >= pix_rect.height():
+            return
+        img = self._source_pixmap.toImage()
+        color = img.pixelColor(x, y)
+        r, g, b = color.red(), color.green(), color.blue()
+        info = f"({x}, {y})  R:{r} G:{g} B:{b}"
+        self.pixel_hovered.emit(x, y, info)
 
     def mouseReleaseEvent(self, event: QMouseEvent):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -159,6 +218,76 @@ class ImageCanvas(QGraphicsView):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._emit_zoom_sync()
+
+    # ------------------------------------------------------------------
+    # ROI 绘制实现
+    # ------------------------------------------------------------------
+    def _roi_draw_start(self):
+        pen = QPen(QColor("#FF0000"), 2, Qt.PenStyle.DashLine)
+        pen.setCosmetic(True)
+        self._roi_item = None
+
+        if self._roi_mode == "rect":
+            item = QGraphicsRectItem()
+            item.setPen(pen)
+            item.setRect(QRectF(self._roi_start, self._roi_start))
+            self._scene.addItem(item)
+            self._roi_item = item
+        elif self._roi_mode == "circle":
+            item = QGraphicsEllipseItem()
+            item.setPen(pen)
+            item.setRect(QRectF(self._roi_start, self._roi_start))
+            self._scene.addItem(item)
+            self._roi_item = item
+        elif self._roi_mode == "line":
+            item = QGraphicsLineItem()
+            item.setPen(pen)
+            item.setLine(QLineF(self._roi_start, self._roi_start))
+            self._scene.addItem(item)
+            self._roi_item = item
+
+    def _roi_draw_move(self, event: QMouseEvent):
+        if not self._roi_item or not self._roi_start:
+            return
+        end = self.mapToScene(event.pos().toPoint())
+        if self._roi_mode == "rect":
+            rect = QRectF(self._roi_start, end).normalized()
+            self._roi_item.setRect(rect)
+        elif self._roi_mode == "circle":
+            rect = QRectF(self._roi_start, end).normalized()
+            self._roi_item.setRect(rect)
+        elif self._roi_mode == "line":
+            self._roi_item.setLine(QLineF(self._roi_start, end))
+
+    def _roi_draw_end(self):
+        end = self._roi_item.mapToScene(
+            self._roi_item.boundingRect().center()
+        ) if hasattr(self._roi_item, 'boundingRect') else QPointF()
+        # 计算最终参数
+        if self._roi_mode == "rect":
+            rect = self._roi_item.rect()
+            params = (int(rect.x()), int(rect.y()), int(rect.width()), int(rect.height()))
+        elif self._roi_mode == "circle":
+            rect = self._roi_item.rect()
+            cx = int(rect.center().x())
+            cy = int(rect.center().y())
+            r = int(min(rect.width(), rect.height()) / 2)
+            params = (cx, cy, r)
+        elif self._roi_mode == "line":
+            line = self._roi_item.line()
+            params = (int(line.x1()), int(line.y1()), int(line.x2()), int(line.y2()))
+        else:
+            params = ()
+
+        # 保留绘制结果在图上（改为实线，半透明填充）
+        pen = QPen(QColor("#00FF00"), 2)
+        pen.setCosmetic(True)
+        self._roi_item.setPen(pen)
+
+        self.roi_created.emit(self._roi_mode, params)
+        self._roi_start = None
+        self._roi_item = None
+        self.setCursor(Qt.CursorShape.CrossCursor)
 
     # ------------------------------------------------------------------
     # helpers

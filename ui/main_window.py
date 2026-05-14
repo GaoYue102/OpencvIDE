@@ -7,7 +7,7 @@ from PyQt6.QtCore import Qt, QSettings
 from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import (
     QMainWindow, QToolBar, QStatusBar, QFileDialog, QMessageBox,
-    QSplitter,
+    QSplitter, QTabWidget, QMenu,
 )
 
 from core.execution_engine import ExecutionEngine
@@ -15,6 +15,8 @@ from ui.script_editor import ScriptEditor
 from ui.image_canvas import ImageCanvas
 from ui.variable_panel import VariablePanel
 from ui.function_doc import FunctionDocPanel
+from ui.find_replace_dialog import FindReplaceDialog
+from ui.histogram_panel import HistogramPanel
 
 
 class ExecState:
@@ -32,12 +34,28 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("OpencvIDE — [未命名]")
         self.resize(1400, 900)
 
+        # 引擎 — 必须在 tab widget 之前创建
+        self._engine = ExecutionEngine()
+
         # 核心组件
-        self._editor = ScriptEditor()
-        self._viewer = ImageCanvas()
+        self._tab_widget = QTabWidget()
+        self._tab_widget.setTabsClosable(True)
+        self._tab_widget.tabCloseRequested.connect(self._close_tab)
+        self._tab_widget.currentChanged.connect(self._on_tab_changed)
+        self._new_tab()  # 创建第一个标签页
+
+        # 图像查看器标签页
+        self._viewer_tabs = QTabWidget()
+        self._viewer_tabs.setTabsClosable(True)
+        self._viewer_tabs.tabCloseRequested.connect(self._close_viewer_tab)
+        self._main_viewer = ImageCanvas()
+        self._viewer_tabs.addTab(self._main_viewer, "当前")
+        self._viewer = self._main_viewer  # 默认查看器
+
         self._variable_panel = VariablePanel()
         self._function_doc = FunctionDocPanel()
-        self._engine = ExecutionEngine()
+        self._histogram_panel = HistogramPanel()
+        self._find_dialog = FindReplaceDialog(self)
 
         # 状态
         self._exec_state = ExecState.IDLE
@@ -59,15 +77,63 @@ class MainWindow(QMainWindow):
         self._update_button_states()
 
     # ------------------------------------------------------------------
+    # 编辑器标签页管理
+    # ------------------------------------------------------------------
+    @property
+    def _editor(self) -> ScriptEditor:
+        return self._tab_widget.currentWidget()
+
+    def _new_tab(self) -> ScriptEditor:
+        editor = ScriptEditor()
+        idx = self._tab_widget.addTab(editor, "未命名")
+        self._tab_widget.setCurrentIndex(idx)
+        return editor
+
+    def _close_tab(self, idx: int):
+        if self._tab_widget.count() <= 1:
+            return  # 至少保留一个标签页
+        editor = self._tab_widget.widget(idx)
+        if editor and editor.is_dirty():
+            ret = QMessageBox.question(
+                self, "未保存", "该标签页已修改，是否关闭？",
+                QMessageBox.StandardButton.Discard
+                | QMessageBox.StandardButton.Cancel,
+            )
+            if ret == QMessageBox.StandardButton.Cancel:
+                return
+        self._tab_widget.removeTab(idx)
+
+    def _close_viewer_tab(self, idx: int):
+        """关闭查看器标签页（保留第一个"当前"标签）。"""
+        if idx == 0:
+            return
+        self._viewer_tabs.removeTab(idx)
+
+    def _clear_viewers(self):
+        """清空所有查看器标签页。"""
+        self._main_viewer.clear_image()
+        while self._viewer_tabs.count() > 1:
+            self._viewer_tabs.removeTab(1)
+        self._histogram_panel.clear()
+
+    def _on_tab_changed(self, idx: int):
+        editor = self._tab_widget.widget(idx)
+        if editor and hasattr(self, '_engine'):
+            self._engine.set_source(editor.toPlainText())
+            self._source_dirty = True
+            title = self._tab_widget.tabText(idx)
+            self.setWindowTitle(f"OpencvIDE — {title}")
+            self._engine.set_breakpoints(editor.breakpoints())
+
+    # ------------------------------------------------------------------
     # 布局
     # ------------------------------------------------------------------
     def _setup_layout(self):
-        """布局：左侧 (editor | viewer) 为 central widget，
-        右侧 VariablePanel、底部 FunctionDoc 为可拖动 DockWidget。"""
-        # 中央：编辑器在上，查看器在下
+        """左侧 (tab编辑器 | 查看器) 为 central widget，
+        右侧 VariablePanel、底部 FunctionDoc 为 DockWidget。"""
         left_splitter = QSplitter(Qt.Orientation.Vertical)
-        left_splitter.addWidget(self._editor)
-        left_splitter.addWidget(self._viewer)
+        left_splitter.addWidget(self._tab_widget)
+        left_splitter.addWidget(self._viewer_tabs)
         left_splitter.setStretchFactor(0, 40)
         left_splitter.setStretchFactor(1, 60)
         self.setCentralWidget(left_splitter)
@@ -81,6 +147,13 @@ class MainWindow(QMainWindow):
         self.addDockWidget(
             Qt.DockWidgetArea.BottomDockWidgetArea, self._function_doc
         )
+
+        # 底部：直方图面板 (tabbified with function doc)
+        self.addDockWidget(
+            Qt.DockWidgetArea.BottomDockWidgetArea, self._histogram_panel
+        )
+        self.tabifyDockWidget(self._function_doc, self._histogram_panel)
+        self._function_doc.raise_()  # 函数说明默认显示
 
     # ------------------------------------------------------------------
     # 菜单栏
@@ -97,6 +170,14 @@ class MainWindow(QMainWindow):
         self._update_recent_menu()
         file_menu.addSeparator()
         file_menu.addAction("退出(&Q)", self.close)
+
+        edit_menu = mb.addMenu("编辑(&E)")
+        edit_menu.addAction("撤销(&U)\tCtrl+Z", self._undo)
+        edit_menu.addAction("重做(&R)\tCtrl+Y", self._redo)
+        edit_menu.addSeparator()
+        edit_menu.addAction("查找/替换(&F)\tCtrl+F", self._show_find_replace)
+        edit_menu.addSeparator()
+        edit_menu.addAction("新建标签页(&N)\tCtrl+T", self._new_tab_action)
 
         run_menu = mb.addMenu("运行(&R)")
         self._act_run = QAction("运行(&R)\tF5", self)
@@ -117,10 +198,11 @@ class MainWindow(QMainWindow):
         run_menu.addAction(self._act_reset)
 
         view_menu = mb.addMenu("视图(&V)")
-        view_menu.addAction("清空查看器", self._viewer.clear_image)
+        view_menu.addAction("清空查看器", self._clear_viewers)
         view_menu.addSeparator()
         view_menu.addAction(self._variable_panel.toggleViewAction())
         view_menu.addAction(self._function_doc.toggleViewAction())
+        view_menu.addAction(self._histogram_panel.toggleViewAction())
 
     # ------------------------------------------------------------------
     # 工具栏
@@ -140,6 +222,11 @@ class MainWindow(QMainWindow):
         self._act_stop_tb = tb.addAction("■ 停止 (Esc)", self._on_stop)
         tb.addSeparator()
         tb.addAction("↺ 重置", self._on_reset)
+        tb.addSeparator()
+        self._act_roi_rect = tb.addAction("□ 矩形ROI", lambda: self._set_roi_mode("rect"))
+        self._act_roi_circle = tb.addAction("○ 圆形ROI", lambda: self._set_roi_mode("circle"))
+        self._act_roi_line = tb.addAction("╱ 直线ROI", lambda: self._set_roi_mode("line"))
+        self._act_roi_off = tb.addAction("✕ 退出ROI", lambda: self._set_roi_mode(""))
 
     # ------------------------------------------------------------------
     # 状态栏
@@ -217,6 +304,22 @@ class MainWindow(QMainWindow):
         self._update_recent_menu()
 
     # ------------------------------------------------------------------
+    # 编辑操作
+    # ------------------------------------------------------------------
+    def _undo(self):
+        self._editor.undo_edit()
+
+    def _redo(self):
+        self._editor.redo_edit()
+
+    def _show_find_replace(self):
+        self._find_dialog.show_for_editor(self._editor)
+
+    def _new_tab_action(self):
+        editor = self._new_tab()
+        self._connect_editor_signals(editor)
+
+    # ------------------------------------------------------------------
     # 文件操作
     # ------------------------------------------------------------------
     def _open_script(self):
@@ -234,10 +337,14 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.warning(self, "错误", f"无法打开文件: {e}")
             return
-        self._editor.setPlainText(content)
-        self._editor.mark_clean()
+        # 在当前标签页打开
+        editor = self._editor
+        editor.setPlainText(content)
+        editor.mark_clean()
         self._current_file = path
-        self.setWindowTitle(f"OpencvIDE — {os.path.basename(path)}")
+        basename = os.path.basename(path)
+        self._tab_widget.setTabText(self._tab_widget.currentIndex(), basename)
+        self.setWindowTitle(f"OpencvIDE — {basename}")
         self._engine.set_source(content)
         self._add_recent(path)
         self._status.showMessage(f"已打开: {path}")
@@ -266,7 +373,9 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "错误", f"无法保存: {e}")
             return False
         self._editor.mark_clean()
-        self.setWindowTitle(f"OpencvIDE — {os.path.basename(path)}")
+        basename = os.path.basename(path)
+        self._tab_widget.setTabText(self._tab_widget.currentIndex(), basename)
+        self.setWindowTitle(f"OpencvIDE — {basename}")
         self._add_recent(path)
         self._status.showMessage(f"已保存: {path}")
         return True
@@ -335,7 +444,7 @@ class MainWindow(QMainWindow):
         self._engine.set_source(self._editor.toPlainText())
         self._variable_panel.clear()
         self._function_doc.clear()
-        self._viewer.clear_image()
+        self._clear_viewers()
         self._current_exec_line = 0
         self._editor.clear_highlight()
         self._exec_state = ExecState.RUNNING
@@ -366,7 +475,7 @@ class MainWindow(QMainWindow):
         self._editor.clear_highlight()
         self._variable_panel.clear()
         self._function_doc.clear()
-        self._viewer.clear_image()
+        self._clear_viewers()
         self._current_exec_line = 0
         self._update_button_states()
         self._status.showMessage("已重置")
@@ -379,7 +488,7 @@ class MainWindow(QMainWindow):
         self._update_button_states()
         self._variable_panel.clear()
         self._function_doc.clear()
-        self._viewer.clear_image()
+        self._clear_viewers()
         self._current_exec_line = 0
         self._last_displayed_var = None
         self._editor.clear_highlight()
@@ -436,19 +545,29 @@ class MainWindow(QMainWindow):
         self._engine.execution_error.connect(
             self._on_error, Qt.ConnectionType.QueuedConnection)
 
-        # 编辑器 → 引擎
-        self._editor.script_modified.connect(self._on_script_modified)
-
-        # 编辑器行号点击 → 设置目标行
-        self._editor.line_clicked.connect(self._on_line_clicked)
-
-        # 编辑器光标移动 → 自动定位到编辑行
-        self._editor.cursorPositionChanged.connect(self._on_cursor_moved)
-
         # 变量面板 → 查看器
         self._variable_panel.image_selected.connect(self._on_variable_selected)
         self._variable_panel.image_double_clicked.connect(
             self._on_variable_double_clicked)
+
+        # 图像查看器像素悬停 → 状态栏
+        self._viewer.pixel_hovered.connect(self._on_pixel_hovered)
+
+        # ROI 创建 → 变量注入
+        self._viewer.roi_created.connect(self._on_roi_created)
+
+        # 第一个标签页的信号
+        self._connect_editor_signals(self._editor)
+
+    def _connect_editor_signals(self, editor: ScriptEditor):
+        """连接编辑器标签页的信号。"""
+        editor.script_modified.connect(self._on_script_modified)
+        editor.line_clicked.connect(self._on_line_clicked)
+        editor.cursorPositionChanged.connect(self._on_cursor_moved)
+        editor.breakpoints_changed.connect(self._on_breakpoints_changed)
+
+    def _on_breakpoints_changed(self):
+        self._engine.set_breakpoints(self._editor.breakpoints())
 
     def _on_line_reached(self, line_no: int):
         self._current_exec_line = line_no
@@ -460,8 +579,53 @@ class MainWindow(QMainWindow):
             self._function_doc.show_line_doc(block.text())
 
     def _on_new_image(self, name: str, cv_img: np.ndarray):
-        self._viewer.set_cv_image(cv_img)
+        # 更新主查看器
+        self._main_viewer.set_cv_image(cv_img)
+        self._histogram_panel.set_image(cv_img)
         self._last_displayed_var = name
+        # 添加历史标签页
+        viewer = ImageCanvas()
+        viewer.set_cv_image(cv_img)
+        self._viewer_tabs.addTab(viewer, name)
+        self._viewer_tabs.setCurrentWidget(viewer)
+        # 连接信号
+        viewer.pixel_hovered.connect(self._on_pixel_hovered)
+        viewer.roi_created.connect(self._on_roi_created)
+        # 限制标签页数量
+        while self._viewer_tabs.count() > 10:
+            self._viewer_tabs.removeTab(1)  # 保留 "当前" 标签在索引 0
+
+    def _on_pixel_hovered(self, x: int, y: int, info: str):
+        self._status.showMessage(info, 3000)  # 3 秒后清除
+
+    # ------------------------------------------------------------------
+    # ROI 工具
+    # ------------------------------------------------------------------
+    def _set_roi_mode(self, mode: str):
+        """切换 ROI 绘制模式。"""
+        self._viewer.set_roi_mode(mode)
+        modes = {"rect": "矩形ROI模式 — 在图像上拖拽绘制", "circle": "圆形ROI模式 — 在图像上拖拽绘制",
+                 "line": "直线ROI模式 — 在图像上拖拽绘制"}
+        self._status.showMessage(modes.get(mode, "ROI模式已退出"))
+
+    def _on_roi_created(self, roi_type: str, params: tuple):
+        """ROI 绘制完成，注入变量到引擎命名空间。"""
+        if roi_type == "rect" and len(params) == 4:
+            x, y, w, h = params
+            var_name = f"roi_rect_{x}_{y}_{w}_{h}"
+            self._status.showMessage(f"矩形: ({x},{y},{w},{h})")
+        elif roi_type == "circle" and len(params) == 3:
+            cx, cy, r = params
+            var_name = f"roi_circle_{cx}_{cy}_{r}"
+            self._status.showMessage(f"圆形: 中心({cx},{cy}) r={r}")
+        elif roi_type == "line" and len(params) == 4:
+            x1, y1, x2, y2 = params
+            var_name = f"roi_line_{x1}_{y1}_{x2}_{y2}"
+            self._status.showMessage(f"直线: ({x1},{y1})→({x2},{y2})")
+        else:
+            return
+        # 存储 ROI 变量以便查看
+        self._last_roi = (roi_type, params, var_name)
 
     def _on_script_modified(self, source: str):
         """编辑器内容变化时更新引擎源码并标记脏。"""
