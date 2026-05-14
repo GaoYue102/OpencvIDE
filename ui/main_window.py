@@ -45,7 +45,7 @@ class MainWindow(QMainWindow):
         self._tab_widget.setTabsClosable(True)
         self._tab_widget.tabCloseRequested.connect(self._close_tab)
         self._tab_widget.currentChanged.connect(self._on_tab_changed)
-        self._new_tab()  # 创建第一个标签页
+        self._new_tab(load_default=True)  # 首标签页加载示例脚本
 
         # 图像查看器标签页
         self._viewer_tabs = QTabWidget()
@@ -85,8 +85,8 @@ class MainWindow(QMainWindow):
     def _editor(self) -> ScriptEditor:
         return self._tab_widget.currentWidget()
 
-    def _new_tab(self) -> ScriptEditor:
-        editor = ScriptEditor()
+    def _new_tab(self, load_default: bool = False) -> ScriptEditor:
+        editor = ScriptEditor(load_default=load_default)
         idx = self._tab_widget.addTab(editor, "未命名")
         self._tab_widget.setCurrentIndex(idx)
         self._connect_editor_signals(editor)

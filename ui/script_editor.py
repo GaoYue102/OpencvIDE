@@ -64,7 +64,7 @@ class ScriptEditor(QPlainTextEdit):
     line_clicked = pyqtSignal(int)  # 点击行号
     breakpoints_changed = pyqtSignal()  # 断点变更
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, load_default: bool = True):
         super().__init__(parent)
         self._line_number_area = LineNumberArea(self)
         self._current_line: int = -1
@@ -96,17 +96,18 @@ class ScriptEditor(QPlainTextEdit):
         # 初始宽度
         self._update_line_number_area_width(0)
 
-        # 加载默认脚本
-        self.setPlainText(DEFAULT_SCRIPT)
-        self._script_dirty = False
+        # 加载默认脚本（仅首标签页）
+        if load_default:
+            self.setPlainText(DEFAULT_SCRIPT)
+            self._script_dirty = False
 
     # ------------------------------------------------------------------
     # 行号栏
     # ------------------------------------------------------------------
     def _line_number_area_width(self):
-        digits = max(1, len(str(max(1, self.blockCount()))))
-        space = 6 + self.fontMetrics().horizontalAdvance('9') * digits
-        return space + 16  # 16px 留给执行箭头
+        digits = max(3, len(str(max(1, self.blockCount()))))
+        space = 10 + self.fontMetrics().horizontalAdvance('9') * digits
+        return space + 18  # 18px 留给执行箭头和断点
 
     def _line_number_area_size(self):
         from PyQt6.QtCore import QSize
