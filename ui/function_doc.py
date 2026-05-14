@@ -291,6 +291,7 @@ class FunctionDocPanel(QDockWidget):
         self.setFeatures(
             QDockWidget.DockWidgetFeature.DockWidgetMovable
             | QDockWidget.DockWidgetFeature.DockWidgetFloatable
+            | QDockWidget.DockWidgetFeature.DockWidgetClosable
         )
         self.setMinimumHeight(80)
 

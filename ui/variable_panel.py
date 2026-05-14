@@ -104,6 +104,7 @@ class VariablePanel(QDockWidget):
         self.setFeatures(
             QDockWidget.DockWidgetFeature.DockWidgetMovable
             | QDockWidget.DockWidgetFeature.DockWidgetFloatable
+            | QDockWidget.DockWidgetFeature.DockWidgetClosable
         )
         self.setMinimumWidth(220)
 

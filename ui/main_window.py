@@ -51,6 +51,7 @@ class MainWindow(QMainWindow):
         self._viewer_tabs = QTabWidget()
         self._viewer_tabs.setTabsClosable(True)
         self._viewer_tabs.tabCloseRequested.connect(self._close_viewer_tab)
+        self._viewer_tabs.tabBarDoubleClicked.connect(self._rename_viewer_tab)
         self._main_viewer = ImageCanvas()
         self._viewer_tabs.addTab(self._main_viewer, "当前")
         self._viewer = self._main_viewer  # 默认查看器
@@ -118,6 +119,29 @@ class MainWindow(QMainWindow):
         while self._viewer_tabs.count() > 1:
             self._viewer_tabs.removeTab(1)
         self._histogram_panel.clear()
+
+    def _rename_viewer_tab(self, idx: int):
+        """双击标签页重命名。"""
+        from PyQt6.QtWidgets import QInputDialog
+        old = self._viewer_tabs.tabText(idx)
+        name, ok = QInputDialog.getText(self, "重命名", "标签页名称:", text=old)
+        if ok and name.strip():
+            self._viewer_tabs.setTabText(idx, name.strip())
+
+    def _save_layout(self):
+        """保存当前布局到 QSettings。"""
+        self._save_settings()
+        self._status.showMessage("布局已保存")
+
+    def _reset_layout(self):
+        """恢复默认布局。"""
+        self._variable_panel.setVisible(True)
+        self._function_doc.setVisible(True)
+        self._histogram_panel.setVisible(True)
+        self._variable_panel.setFloating(False)
+        self._function_doc.setFloating(False)
+        self._histogram_panel.setFloating(False)
+        self._status.showMessage("布局已恢复默认")
 
     def _on_tab_changed(self, idx: int):
         editor = self._tab_widget.widget(idx)
@@ -208,6 +232,9 @@ class MainWindow(QMainWindow):
         view_menu.addAction(self._variable_panel.toggleViewAction())
         view_menu.addAction(self._function_doc.toggleViewAction())
         view_menu.addAction(self._histogram_panel.toggleViewAction())
+        view_menu.addSeparator()
+        view_menu.addAction("保存当前布局", self._save_layout)
+        view_menu.addAction("恢复默认布局", self._reset_layout)
 
     # ------------------------------------------------------------------
     # 工具栏
